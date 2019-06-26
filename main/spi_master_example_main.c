@@ -19,6 +19,8 @@
 #include "pretty_effect.h"
 #include "esp_spi_flash.h"
 
+#include "../components/BME280_driver/bme280.h"
+
 /*
  This code displays some fancy graphics on the 320x240 LCD on an ESP-WROVER_KIT board.
  This example demonstrates the use of both spi_device_transmit as well as
@@ -57,6 +59,12 @@ typedef enum {
     LCD_TYPE_ST,
     LCD_TYPE_MAX,
 } type_lcd_t;
+
+
+uint8_t SPI_RX_Buffer[50];
+int8_t bme280_spi_bus_read(uint8_t hw_addr, uint8_t reg_addr, uint8_t *reg_data, uint16_t len);
+int8_t bme280_spi_bus_write(uint8_t hw_addr, uint8_t reg_addr, uint8_t *reg_data, uint16_t cnt);
+void user_delay_ms(uint32_t miliseconds);
 
 //Place data into DRAM. Constant data gets placed into DROM by default, which is not accessible by DMA.
 DRAM_ATTR static const lcd_init_cmd_t st_init_cmds[]={
@@ -388,9 +396,6 @@ static void display_pretty_colors(spi_device_handle_t spi)
     }
 }
 
-void app_main()
-{
-    esp_err_t ret;
     spi_device_handle_t spi;
     spi_bus_config_t buscfg={
         .miso_io_num=PIN_NUM_MISO,
@@ -404,7 +409,8 @@ void app_main()
 // #ifdef CONFIG_LCD_OVERCLOCK
 //         .clock_speed_hz=26*1000*1000,           //Clock out at 26 MHz
 // #else
-        .clock_speed_hz=10*1000*1000,           //Clock out at 10 MHz
+        // .clock_speed_hz=10*1000*1000,           //Clock out at 10 MHz
+        .clock_speed_hz=1000*1000,           //Clock out at 10 MHz
 // #endif
         .mode=0,                                //SPI mode 0
         .spics_io_num=PIN_NUM_CS,               //CS pin
@@ -412,24 +418,111 @@ void app_main()
         .queue_size=1,                          //We want to be able to queue 7 transactions at a time
         .pre_cb=lcd_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
     };
+
+
+
+void print_sensor_data(struct bme280_data *comp_data)
+{
+#ifdef BME280_FLOAT_ENABLE
+        printf("%0.2f, %0.2f, %0.2f\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
+#else
+        printf("%d, %d, %d\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
+#endif
+}
+
+int8_t stream_sensor_data_forced_mode(struct bme280_dev *dev)
+{
+    int8_t rslt;
+    uint8_t settings_sel;
+    struct bme280_data comp_data;
+
+    /* Recommended mode of operation: Indoor navigation */
+    dev->settings.osr_h = BME280_OVERSAMPLING_1X;
+    dev->settings.osr_p = BME280_OVERSAMPLING_16X;
+    dev->settings.osr_t = BME280_OVERSAMPLING_2X;
+    dev->settings.filter = BME280_FILTER_COEFF_16;
+
+    settings_sel = BME280_OSR_PRESS_SEL | BME280_OSR_TEMP_SEL | BME280_OSR_HUM_SEL | BME280_FILTER_SEL;
+
+    rslt = bme280_set_sensor_settings(settings_sel, dev);
+
+    printf("Temperature, Pressure, Humidity\r\n");
+    /* Continuously stream sensor data */
+    while (1) {
+        rslt = bme280_set_sensor_mode(BME280_FORCED_MODE, dev);
+        /* Wait for the measurement to complete and print data @25Hz */
+        dev->delay_ms(40);
+        rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
+        print_sensor_data(&comp_data);
+    }
+    return rslt;
+}
+
+
+
+void user_delay_ms(uint32_t miliseconds) {
+    vTaskDelay(miliseconds / portTICK_PERIOD_MS);
+}
+
+static void bme280_my_init(void)
+{
+    struct bme280_dev dev;
+    int8_t rslt = BME280_OK;
+
+    /* Sensor_0 interface over SPI with native chip select line */
+    dev.dev_id = 0;
+    dev.intf = BME280_SPI_INTF;
+    dev.read = bme280_spi_bus_read;
+    dev.write = bme280_spi_bus_write;
+    dev.delay_ms = user_delay_ms;
+
+    rslt = bme280_init(&dev);
+
+    stream_sensor_data_forced_mode(&dev);
+}
+
+
+
+
+
+void app_main()
+{
+    esp_err_t ret;
+
     //Initialize the SPI bus
     ret=spi_bus_initialize(HSPI_HOST, &buscfg, 1);
     ESP_ERROR_CHECK(ret);
     //Attach the LCD to the SPI bus
     ret=spi_bus_add_device(HSPI_HOST, &devcfg, &spi);
     ESP_ERROR_CHECK(ret);
-    //Initialize the LCD
+
+    // //Initialize the LCD
     // lcd_init(spi);
-    //Initialize the effect displayed
+    // //Initialize the effect displayed
     // ret=pretty_effect_init();
     // ESP_ERROR_CHECK(ret);
 
-    //Go do nice stuff.
+    // //Go do nice stuff.
     // display_pretty_colors(spi);
 
     
 
     printf("Hello world!\n");
+
+    // uint8_t reg_data[3] = { 1, 2, 3 };
+
+    // bme280_spi_bus_read(1, 9, reg_data, sizeof(reg_data));
+
+    // printf("dddddddd in %d ..\n", reg_data[0]);
+    // printf("dddddddd in %d ..\n", reg_data[1]);
+    // printf("dddddddd in %d ..\n", reg_data[2]);
+
+    // reg_data[0] = 5;
+    // reg_data[1] = 4;
+    // reg_data[2] = 3;
+    // bme280_spi_bus_write(1, 3, reg_data, sizeof(reg_data));
+
+    bme280_my_init();
 
     /* Print chip information */
     esp_chip_info_t chip_info;
@@ -451,6 +544,84 @@ void app_main()
     printf("Restarting now.\n");
     fflush(stdout);
     // esp_restart();
+
+
+
+
+
 }
 
 
+// /************************bmi 160>>>*****************************/
+int8_t bme280_spi_bus_read(uint8_t hw_addr, uint8_t reg_addr, uint8_t *reg_data, uint16_t len) {
+    int32_t error = 0;
+    uint8_t tx_buff = reg_addr | 0x80;  // OR address with 1000 0000; Read -> set msb to '1';
+    // uint8_t *rx_buff_pointer;
+    // rx_buff_pointer = (uint8_t *)(SPI_RX_Buffer);
+
+    // Do the actual SPI transfer
+    // nrf_gpio_pin_write(BMI160_PIN_NCS,RESET);       /*CHIP SELECT*/
+    // nrf_drv_spi_transfer(&spi, &tx_buff, 1, rx_buff_pointer, len + 1);
+
+    // while (!spi_xfer_done) {
+    // } // Loop until the transfer is complete
+    // nrf_gpio_pin_write(BMI160_PIN_NCS,SET);       /*CHIP SELECT*/
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+    t.length = 8 * (len + 1);
+    t.flags = SPI_TRANS_USE_RXDATA;
+    
+    t.tx_buffer=&tx_buff;
+
+    t.user = (void*)1;
+
+    esp_err_t ret = spi_device_polling_transmit(spi, &t);
+    assert( ret == ESP_OK );
+
+    // return *(uint32_t*)t.rx_data;
+
+
+    // Copy received bytes to reg_data
+    uint8_t stringpos;
+    for (stringpos = 0; stringpos < len; stringpos++)
+        // *(reg_data + stringpos) = SPI_RX_Buffer[stringpos + 1];
+        *(reg_data + stringpos) = t.rx_data[stringpos + 1];
+
+    return (int8_t)error;
+}
+
+int8_t bme280_spi_bus_write(uint8_t hw_addr, uint8_t reg_addr, uint8_t *reg_data, uint16_t cnt) {
+    int32_t error = 0;
+    // Allocate array, which lenght is address + number of data bytes to be sent
+    uint8_t tx_buff[cnt + 1];
+
+    uint16_t stringpos;
+    // AND address with 0111 1111; set msb to '0' (write operation)
+    tx_buff[0] = reg_addr & 0x7F;
+
+    for (stringpos = 0; stringpos < cnt; stringpos++) {
+        tx_buff[stringpos + 1] = *(reg_data + stringpos);
+    }
+
+
+    esp_err_t ret;
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));       //Zero out the transaction
+    t.length= 8 * (cnt + 1);                     //Command is 8 bits
+    t.tx_buffer= &tx_buff;               //The data is the cmd itself
+    t.user=(void*)0;                //D/C needs to be set to 0
+    ret=spi_device_polling_transmit(spi, &t);  //Transmit!
+    assert(ret==ESP_OK);            //Should have had no issues.
+
+    // // Do the actual SPI transfer
+    // nrf_gpio_pin_write(BMI160_PIN_NCS,RESET);       /*CHIP SELECT*/
+    // nrf_drv_spi_transfer(&spi, tx_buff, cnt + 1, NULL, 0);
+
+    // while (!spi_xfer_done) {
+    // }; // Loop until the transfer is complete
+    // nrf_gpio_pin_write(BMI160_PIN_NCS,SET);       /*CHIP SELECT*/
+
+
+    return (int8_t)error;
+}
